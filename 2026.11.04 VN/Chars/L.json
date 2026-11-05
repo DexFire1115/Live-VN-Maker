@@ -1,0 +1,12 @@
+{
+    "Name": "Laemshi",
+    "Color": "eebbaa",
+    "scaleX": 0.5,
+    "scaleY": 0.5,
+    "DefaultFlipH": false,
+    "DefaultFlipV": false,
+    "DefaultX": 960,
+    "DefaultY": 640,
+    "DefaultRot": 0,
+    "Asset": "laemshi.png"
+}

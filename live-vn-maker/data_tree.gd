@@ -1,0 +1,233 @@
+class_name DataTree
+extends Resource
+
+@export var dataset: Dictionary
+
+func _init(data := {}) -> void:
+	dataset = data
+
+func copy() -> DataTree:
+	return DataTree.new(dataset.duplicate_deep())
+
+func toJSONStr() -> String:
+	return JSON.stringify(dataset, "    ", false)
+
+func isEmpty() -> bool:
+	return dataset == null || dataset.is_empty()
+
+func has(path: String) -> bool:
+	return fetchData(dataset, path)[1] == 0
+
+func dget(path: String, default = null) -> Variant:
+	var rawFetch := fetchData(dataset, path)
+	#print("eval for : ", path, " -> ", fetchFail(rawFetch))
+	if(fetchFail(rawFetch)): return default
+	return rawFetch[0]
+
+func safeGet(path: String, type: int = TYPE_NIL) -> Variant:
+	var default = null
+	match type:
+		TYPE_INT: default = 0
+		TYPE_FLOAT: default = 0.0
+		TYPE_BOOL: default = false
+		TYPE_STRING: default = ""
+		TYPE_ARRAY: default = []
+		TYPE_DICTIONARY: default = {}
+		-1: default = 0 # "NUM" Flex case
+		-2: default = 0 # "Primitive" Flex case
+	var result = dget(path, default)
+	if(type < 0 && (typeof(result) == TYPE_FLOAT || typeof(result) == TYPE_INT)):
+		return result
+	if(type == -2 && (typeof(result) == TYPE_BOOL || typeof(result) == TYPE_STRING)):
+		return result
+	if(typeof(result) == type):
+		return result
+	return default
+
+# -2 : Invalid Search (Does Not Exist)
+# -1 : Shallow Search (Found Dict/Arr)
+#  0 : Perfect Search (Found Value)
+# +# : Premature End (Found Value with remaining path)
+func fetchData(data, path: String) -> Array:
+	var pathStack := path.split("/")
+	if(!pathStack[pathStack.size() - 1].is_empty()):
+		pathStack.append("")
+	var element = data
+	var state := 0
+	var count := 0
+	for level in pathStack:
+		count += 1
+		if(level.is_empty()):
+			state = -1 if (element is Dictionary || element is Array) else 0
+			break
+		if(!(element is Dictionary || element is Array)): 
+			state = pathStack.size() - count
+			break
+		if(!element.has(level)):
+			if(element.has(level + ".json")):
+				element = element[level + ".json"]
+				continue
+			if(element is Array && level.is_valid_int()):
+				if(Array(element).size() > (int(level))):
+					element = element[int(level)]
+					continue
+			state = -2
+			break
+		element = element[level]
+	return [element, state]
+
+func dset(path: String, value) -> Variant:
+	return editData(dataset, path, value)
+
+func instantiate(path: String, value, typeSafe := true) -> Variant:
+	var oldData = dget(path)
+	if(typeSafe && typeof(oldData) != typeof(value)):
+		dset(path, value)
+	elif(oldData == null):
+		dset(path, value)
+	return oldData
+
+func editData(data, path: String, value) -> Variant:
+	var pathStack := path.split("/")
+	var element = data
+	var oldElem = null
+	for i in pathStack.size():
+		var level := pathStack[i]
+		if(level.is_empty()):
+			break
+		if(i + 1 == pathStack.size()):
+			var oldDataFetch = fetchData(element, level)
+			if(!fetchFail(oldDataFetch)): oldElem = oldDataFetch[0]
+			createLevel(element, level, value)
+			break
+		var nextLevel := pathStack[i + 1]
+		var elemFetch = fetchData(element, level)
+		if(fetchFail(elemFetch) ||  !isValidScope(element, level)):
+			if(!fetchFail(elemFetch)): oldElem = elemFetch[0]
+			@warning_ignore("incompatible_ternary")
+			var nextBracket = [] if(nextLevel.is_valid_int()) else {}
+			createLevel(element, level, nextBracket)
+			element = fetchData(element, level)[0]
+			continue
+		element = elemFetch[0]
+	return oldElem
+
+# -1 : Failed Case
+#  0 : Array Insert
+#  1 : Dictionary Insert
+func createLevel(data, level: String, value = null) -> int:
+	if(isValidArrayIndex(data, level)):
+		if(Array(data).size() <= (int(level))):
+			Array(data).resize(int(level) + 1)
+		data[int(level)] = value
+		return 0
+	if(data is Dictionary):
+		data[level] = value
+		return 1
+	return -1
+
+func isValidScope(data, level) -> bool:
+	return data is Dictionary || isValidArrayIndex(data, level)
+
+func isValidArrayIndex(data, level) -> bool:
+	return (data is Array && level.is_valid_int())
+
+func isNum(data) -> bool:
+	return data is int || data is float
+
+func isPrimitive(data) -> bool:
+	return isNum(data) || data is bool || data is String
+
+func isComplex(data) -> bool:
+	return data is Dictionary || data is Array
+
+func fetchFail(input: Array) -> bool:
+	return input[1] == -2 || input[1] > 1
+
+func getComplexType(path: String) -> int:
+	var data = dget(path)
+	if(data == null): return TYPE_NIL
+	if(!isComplex(data)): return typeof(data)
+	var currentType = int(TYPE_NIL)
+	var oldType = currentType
+	for v in data:
+		currentType = typeof(v)
+		if(currentType != oldType):
+			if(oldType == TYPE_NIL): oldType = currentType
+			else: return TYPE_NIL
+	return currentType
+
+func complexInstantiate(path: String, isDict := true, baseVal = null):
+	if(dget(path) is Dictionary): baseVal = dget(path + "/Base")
+	if(dget(path) is Array): baseVal = dget(path + "/0")
+	if(isDict):
+		var oldVal = instantiate(path, {})
+		if(baseVal == null): baseVal = oldVal
+		dset(path + "/Base", baseVal)
+	else:
+		var oldVal = instantiate(path, [])
+		if(baseVal == null): baseVal = oldVal
+		dset(path + "/0", baseVal)
+
+func complexErase(path: String):
+	erase(path)
+	var parentPath = path.rsplit("/", true, 1)[0]
+	var container = dget(parentPath)
+	if(!isComplex(container)): return
+	if(container.size() != 1): return
+	if(container is Dictionary && container.has("Base")):
+		dset(parentPath, dget(parentPath + "/Base"))
+	else:
+		dset(parentPath, dget(parentPath + "/0"))
+
+func getAllFilesfromPath(path := "") -> Array:
+	path = path.trim_prefix("/")
+	return getAllFilesfromDict(safeGet(path, TYPE_DICTIONARY), path)
+
+func getAllFilesfromDict(dict: Dictionary, path := "") -> Array:
+	var arr = []
+	for k in dict.keys():
+		var v = dict[k]
+		if(k is String && str(k).ends_with(".json")):
+			arr.append(path + "/" + k)
+			continue
+		if(v is Dictionary):
+			arr.append_array(getAllFilesfromDict(v, path + "/" + k))
+	return arr
+
+func getPrimitve(path: String, default = null) -> Variant:
+	var val = dget(path, default)
+	if(val == default): return val
+	while(isComplex(val)):
+		if(val is Array):
+			if(val.is_empty()): return default
+			val = val[0]
+			continue
+		if(val is Dictionary):
+			if(!val.has("Base")): return default
+			val = val["Base"]
+			continue
+	if(!isPrimitive(val)): return default
+	return val
+
+func erase(path: String):
+	if(path.is_empty()): 
+		dataset.clear()
+		return
+	if(!path.contains("/")):
+		eraseFrom(dataset, path)
+		return
+	var pathAndKey = path.rsplit("/", true, 1)
+	var obj = dget(pathAndKey[0])
+	if(obj == null): return
+	eraseFrom(obj, pathAndKey[1])
+
+func eraseFrom(object, key):
+	if(!isValidScope(object, key)): return
+	if(object is Dictionary):
+		object.erase(key)
+	if(object is Array):
+		object.remove_at(key)
+
+func _to_string() -> String:
+	return toJSONStr()
